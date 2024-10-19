@@ -81,7 +81,7 @@ class UDPBasedProtocol:
 class MyTCPProtocol(UDPBasedProtocol):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.udp_socket.settimeout(0.01)
+        self.udp_socket.settimeout(0.001)
         self.sent_data_len = 1
         self.recv_data_len = 1
         self.uuid = uuid.uuid4()
@@ -96,11 +96,11 @@ class MyTCPProtocol(UDPBasedProtocol):
         #LOGGER.info(data)
         
         data_offset = self.sent_data_len - init_data_len
-        i = 0
-       # for i in range(all_data_len // MAX_DATA_SIZE + 1):
-        packet = TCPPacket(data[data_offset + i * MAX_DATA_SIZE: data_offset + (i + 1) * MAX_DATA_SIZE], 
+
+        for i in range(all_data_len // MAX_DATA_SIZE + 1):
+            packet = TCPPacket(data[data_offset + i * MAX_DATA_SIZE: data_offset + (i + 1) * MAX_DATA_SIZE], 
                                 syn=self.sent_data_len + i * MAX_DATA_SIZE, ack=self.recv_data_len)
-        self.sendto(bytes(packet))
+            self.sendto(bytes(packet))
             #LOGGER.info(f"{self.uuid} Ready to send {len(data[data_offset + i * MAX_DATA_SIZE: data_offset + (i + 1) * MAX_DATA_SIZE])}")
 
         packets_send = all_data_len // MAX_DATA_SIZE
@@ -145,10 +145,9 @@ class MyTCPProtocol(UDPBasedProtocol):
             if self.sent_data_len < init_data_len + all_data_len and self.sent_data_len >= init_data_len:
                 offset = self.sent_data_len - init_data_len
                 #LOGGER.info(f"{self.uuid} {(all_data_len + init_data_len - self.sent_data_len) // MAX_DATA_SIZE}")
-                for i in range((all_data_len + init_data_len - self.sent_data_len) // MAX_DATA_SIZE + 1):
-                    packet = TCPPacket(data[offset + i * MAX_DATA_SIZE:offset + (i + 1) * MAX_DATA_SIZE], 
-                                    syn=self.sent_data_len + i * MAX_DATA_SIZE, ack=self.recv_data_len)
-                    self.sendto(bytes(packet))
+                packet = TCPPacket(data[offset:offset + MAX_DATA_SIZE], 
+                                syn=self.sent_data_len, ack=self.recv_data_len)
+                self.sendto(bytes(packet))
                     #LOGGER.info(f"{self.uuid} Resent frame {self.sent_data_len + i * MAX_DATA_SIZE}")
         #LOGGER.info("-------------------------------------------------------------")
         self.sent_data_len = init_data_len + all_data_len
