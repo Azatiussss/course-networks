@@ -86,13 +86,14 @@ class MyTCPProtocol(UDPBasedProtocol):
         self.recv_data_len = 1
         self.uuid = uuid.uuid4()
         self.buffer = []
+        self.bufferized_data = b''
 
     def send(self, data: bytes):
         init_data_len = self.sent_data_len
         all_data_len = len(data)
         confirmation_retries = 0
 
-        #LOGGER.info(f"Ready to send {init_data_len}")
+        #LOGGER.info(data)
         
         data_offset = self.sent_data_len - init_data_len
         i = 0
@@ -107,13 +108,25 @@ class MyTCPProtocol(UDPBasedProtocol):
             #LOGGER.info(f'Waiting for confirm')
             try:
                 #LOGGER.info(f'Waiting for confirm')
-                recvd_bytes = self.recvfrom(MAX_HEADER_SIZE)
+                recvd_bytes = self.recvfrom(MAX_PACKET_SIZE)
                 #LOGGER.info(f'Confirmed')
-                recvd_header = Header.from_bytes(recvd_bytes)
+                recvd_packet = TCPPacket.from_bytes(recvd_bytes)
+
+                recvd_header = recvd_packet.header
                 confirmation_retries = 0
                 
-                #if recvd_header.syn <= self.recv_data_len:
-                 #   
+                if recvd_header.syn > 0:
+                    if recvd_packet.header.syn == self.recv_data_len:
+                        self.bufferized_data += recvd_packet.data
+                        self.recv_data_len += len(recvd_packet.data)
+                        self.bufferized_data += self.process_buffer()
+                    else:
+                        heapq.heappush(self.buffer, recvd_packet)
+
+                    self.send_ack()
+                    continue
+                    #self.send_ack()
+                    
                 #if self.sent_data_len < recvd_header.ack:
                  #   confirmation_retries = 0
                 if recvd_header.ack <= self.sent_data_len:
@@ -141,17 +154,37 @@ class MyTCPProtocol(UDPBasedProtocol):
         self.sent_data_len = init_data_len + all_data_len
         return all_data_len
 
+    def process_buffer(self, ):
+        final_data = b''
+        while len(self.buffer) > 0 and self.buffer[0].header.syn <= self.recv_data_len:
+            popped_packet = heapq.heappop(self.buffer)
+            if popped_packet.header.syn < self.recv_data_len:
+                continue
+            final_data += popped_packet.data
+            self.recv_data_len += len(popped_packet.data)
+        
+        return final_data
+
+    def send_ack(self, ):
+        conf_packet = Header(syn=0, ack=self.recv_data_len)
+        self.sendto(bytes(conf_packet))
+
     def recv(self, n: int):
         init_recv_size = self.recv_data_len
 
         #buffer = []
-        final_data = b''
+        final_data = self.bufferized_data[:n] #b''
+        self.bufferized_data = self.bufferized_data[n:]
+        n -= len(final_data)
+        #LOGGER.info(f'{final_data} {self.bufferized_data}')
         
         #LOGGER.info(f'Ready to recv, {self.recv_data_len}')
         while self.recv_data_len < init_recv_size + n:
             #LOGGER.info(f'Ready to recv')
             try:
                 #LOGGER.info(f'Waiting for packet')
+                final_data += self.process_buffer()
+
                 recvd_bytes = self.recvfrom(MAX_PACKET_SIZE)
                 #LOGGER.info(f'Recieved packet {len(recvd_bytes)}')
                 recvd_packet = TCPPacket.from_bytes(recvd_bytes)
@@ -168,14 +201,11 @@ class MyTCPProtocol(UDPBasedProtocol):
                     final_data += recvd_packet.data
                     self.recv_data_len += len(recvd_packet.data)
 
+                    final_data += self.process_buffer()
+
                     #LOGGER.info(f'Update recv_size {recv_size}')
 
-                    while len(self.buffer) > 0 and self.buffer[0].header.syn <= self.recv_data_len:
-                        popped_packet = heapq.heappop(self.buffer)
-                        if popped_packet.header.syn < self.recv_data_len:
-                            continue
-                        final_data += popped_packet.data
-                        self.recv_data_len += len(popped_packet.data)
+                    
                         #LOGGER.info(f'{self.uuid} extracting saved chunks')
 
                     #LOGGER.info(f'Sending confirmation')
@@ -184,11 +214,9 @@ class MyTCPProtocol(UDPBasedProtocol):
                         heapq.heappush(self.buffer, recvd_packet)
             except Exception as e:
                 #LOGGER.info(f'{self.uuid} {e}')
-                conf_packet = Header(syn=0, ack=self.recv_data_len)
-                self.sendto(bytes(conf_packet))
+                self.send_ack()
 
-        conf_packet = Header(syn=0, ack=self.recv_data_len)
-        self.sendto(bytes(conf_packet))
+        self.send_ack()
        # self.sent_data_len += 1
         #LOGGER.info(final_data)
         return final_data
