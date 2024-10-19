@@ -4,12 +4,12 @@ import heapq
 import logging
 import signal
 import threading
+import uuid
 
-MAX_PACKET_SIZE = 65536
+MAX_PACKET_SIZE = 1514
 MAX_HEADER_SIZE = 8
 MAX_DATA_SIZE = MAX_PACKET_SIZE - MAX_HEADER_SIZE
 MAX_CONFIRMATION_RETRIES = 32
-
 
 LOGGER = logging.getLogger(__name__)
 
@@ -81,9 +81,11 @@ class UDPBasedProtocol:
 class MyTCPProtocol(UDPBasedProtocol):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.udp_socket.settimeout(0.001)
-        self.sent_data_len = 0
-        self.recv_data_len = 0
+        self.udp_socket.settimeout(0.01)
+        self.sent_data_len = 1
+        self.recv_data_len = 1
+        self.uuid = uuid.uuid4()
+        self.buffer = []
 
     def send(self, data: bytes):
         init_data_len = self.sent_data_len
@@ -93,47 +95,56 @@ class MyTCPProtocol(UDPBasedProtocol):
         #LOGGER.info(f"Ready to send {init_data_len}")
         
         data_offset = self.sent_data_len - init_data_len
-        for i in range(all_data_len // MAX_DATA_SIZE + 1):
-            packet = TCPPacket(data[data_offset + i * MAX_DATA_SIZE: data_offset + (i + 1) * MAX_DATA_SIZE], 
-                                syn=self.sent_data_len, ack=self.recv_data_len)
-            self.sendto(bytes(packet))
+        i = 0
+       # for i in range(all_data_len // MAX_DATA_SIZE + 1):
+        packet = TCPPacket(data[data_offset + i * MAX_DATA_SIZE: data_offset + (i + 1) * MAX_DATA_SIZE], 
+                                syn=self.sent_data_len + i * MAX_DATA_SIZE, ack=self.recv_data_len)
+        self.sendto(bytes(packet))
+            #LOGGER.info(f"{self.uuid} Ready to send {len(data[data_offset + i * MAX_DATA_SIZE: data_offset + (i + 1) * MAX_DATA_SIZE])}")
 
         packets_send = all_data_len // MAX_DATA_SIZE
         while self.sent_data_len < init_data_len + all_data_len:
-           # LOGGER.info(f'Waiting for confirm')
+            #LOGGER.info(f'Waiting for confirm')
             try:
                 #LOGGER.info(f'Waiting for confirm')
                 recvd_bytes = self.recvfrom(MAX_HEADER_SIZE)
                 #LOGGER.info(f'Confirmed')
                 recvd_header = Header.from_bytes(recvd_bytes)
+                confirmation_retries = 0
                 
-                if recvd_header.syn <= self.recv_data_len:
+                #if recvd_header.syn <= self.recv_data_len:
+                 #   
+                #if self.sent_data_len < recvd_header.ack:
+                 #   confirmation_retries = 0
+                if recvd_header.ack <= self.sent_data_len:
                     continue
 
-                confirmation_retries = 0
-                self.sent_data_len = recvd_header.ack
-                #LOGGER.info(f'Confirmed receiving {self.sent_data_len}')
-                self.recv_data_len = recvd_header.syn #+ 1
+                self.sent_data_len = recvd_header.ack #max(recvd_header.ack, self.sent_data_len)
+                #LOGGER.info(f'{self.uuid} Confirmed receiving {self.sent_data_len} {recvd_header.ack} {init_data_len + all_data_len} {confirmation_retries}')
+                #self.recv_data_len = recvd_header.syn #+ 1
             except Exception as e:
                 #LOGGER.info(f'Confirmation timed out')
                 confirmation_retries += 1
                 if confirmation_retries > MAX_CONFIRMATION_RETRIES:
-                    self.recv_data_len += 1
+                   # self.recv_data_len += 1
                     break
 
-            if self.sent_data_len < init_data_len + all_data_len:
-                packet = TCPPacket(data[self.sent_data_len - init_data_len:self.sent_data_len - init_data_len + MAX_DATA_SIZE], 
-                                    syn=self.sent_data_len, ack=self.recv_data_len)
-                self.sendto(bytes(packet))
-                
-       # LOGGER.info("-------------------------------------------------------------")
-
+            if self.sent_data_len < init_data_len + all_data_len and self.sent_data_len >= init_data_len:
+                offset = self.sent_data_len - init_data_len
+                #LOGGER.info(f"{self.uuid} {(all_data_len + init_data_len - self.sent_data_len) // MAX_DATA_SIZE}")
+                for i in range((all_data_len + init_data_len - self.sent_data_len) // MAX_DATA_SIZE + 1):
+                    packet = TCPPacket(data[offset + i * MAX_DATA_SIZE:offset + (i + 1) * MAX_DATA_SIZE], 
+                                    syn=self.sent_data_len + i * MAX_DATA_SIZE, ack=self.recv_data_len)
+                    self.sendto(bytes(packet))
+                    #LOGGER.info(f"{self.uuid} Resent frame {self.sent_data_len + i * MAX_DATA_SIZE}")
+        #LOGGER.info("-------------------------------------------------------------")
+        self.sent_data_len = init_data_len + all_data_len
         return all_data_len
 
     def recv(self, n: int):
         init_recv_size = self.recv_data_len
 
-        buffer = []
+        #buffer = []
         final_data = b''
         
         #LOGGER.info(f'Ready to recv, {self.recv_data_len}')
@@ -146,9 +157,11 @@ class MyTCPProtocol(UDPBasedProtocol):
                 recvd_packet = TCPPacket.from_bytes(recvd_bytes)
                 
                 #recv_segment = recvd_packet.header.syn
-                #LOGGER.info(f'{recvd_packet.header.syn} - {self.recv_size}')
+                #LOGGER.info(f'{self.uuid} {recvd_packet.header.syn} - {self.recv_data_len} - {len(recvd_packet.data)}')
                 #LOGGER.info(f'Recieved conf {self.recvd_conf}')
                 if recvd_packet.header.syn < self.recv_data_len:
+                #    conf_packet = Header(syn=0, ack=self.recv_data_len)
+                 #   self.sendto(bytes(conf_packet))
                     continue
 
                 if recvd_packet.header.syn == self.recv_data_len:
@@ -157,24 +170,29 @@ class MyTCPProtocol(UDPBasedProtocol):
 
                     #LOGGER.info(f'Update recv_size {recv_size}')
 
-                    while len(buffer) > 0 and buffer[0].syn == self.recv_data_len:
-                        popped_packet = heapq.heappop(buffer)
+                    while len(self.buffer) > 0 and self.buffer[0].header.syn <= self.recv_data_len:
+                        popped_packet = heapq.heappop(self.buffer)
+                        if popped_packet.header.syn < self.recv_data_len:
+                            continue
                         final_data += popped_packet.data
                         self.recv_data_len += len(popped_packet.data)
+                        #LOGGER.info(f'{self.uuid} extracting saved chunks')
 
                     #LOGGER.info(f'Sending confirmation')
                 else:
                     if recvd_packet.header.syn > self.recv_data_len:
-                        heapq.heappush(buffer, recvd_packet)
+                        heapq.heappush(self.buffer, recvd_packet)
             except Exception as e:
-                conf_packet = Header(syn=self.sent_data_len, ack=self.recv_data_len)
+                #LOGGER.info(f'{self.uuid} {e}')
+                conf_packet = Header(syn=0, ack=self.recv_data_len)
                 self.sendto(bytes(conf_packet))
 
-        conf_packet = Header(syn=self.sent_data_len, ack=self.recv_data_len)
+        conf_packet = Header(syn=0, ack=self.recv_data_len)
         self.sendto(bytes(conf_packet))
-        self.sent_data_len += 1
+       # self.sent_data_len += 1
         #LOGGER.info(final_data)
         return final_data
-    
+
     def close(self):
         super().close()
+
